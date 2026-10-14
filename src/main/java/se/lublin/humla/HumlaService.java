@@ -22,9 +22,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.media.AudioManager;
 import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.NetworkRequest;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -156,10 +160,28 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     private ToggleInputMode mToggleInputMode;
     private ContinuousInputMode mContinuousInputMode;
 
+    private static final int INITIAL_RECONNECT_DELAY = 3000;
+    private static final int MAX_RECONNECT_DELAY = 60000;
+    private int mReconnectDelay = INITIAL_RECONNECT_DELAY;
     private boolean mReconnecting;
+    private ConnectivityManager.NetworkCallback mNetworkCallback;
+
+    private final Runnable mReconnectRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!mAutoReconnect) {
+                return;
+            }
+            if (mConnectionState == ConnectionState.CONNECTED || mConnectionState == ConnectionState.CONNECTING) {
+                return;
+            }
+            Log.i(TAG, "Watchdog triggered: attempting auto-reconnect...");
+            connect();
+        }
+    };
 
     /**
-     * Listen for connectivity changes in the reconnection state, and reconnect accordingly.
+     * Listen for legacy connectivity changes in the reconnection state, and reconnect accordingly.
      */
     private final BroadcastReceiver mConnectivityReceiver = new BroadcastReceiver() {
         @Override
@@ -176,8 +198,9 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             ConnectivityManager cm = (ConnectivityManager) context.getSystemService(CONNECTIVITY_SERVICE);
             NetworkInfo info = cm.getActiveNetworkInfo();
             if (info != null && info.isConnected()) {
-                Log.v(TAG, "Connectivity restored, attempting reconnect.");
-                connect();
+                Log.v(TAG, "Connectivity restored via broadcast, triggering immediate reconnect.");
+                mHandler.removeCallbacks(mReconnectRunnable);
+                mHandler.post(mReconnectRunnable);
             }
         }
     };
@@ -279,11 +302,48 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
 
         // initialize minidns dns lookup mechanisms
         AndroidUsingLinkProperties.setup(this);
+
+        // Register NetworkCallback to immediately trigger reconnection when network returns
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    NetworkRequest request = new NetworkRequest.Builder()
+                            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            .build();
+                    mNetworkCallback = new ConnectivityManager.NetworkCallback() {
+                        @Override
+                        public void onAvailable(Network network) {
+                            Log.i(TAG, "NetworkCallback: System reported Internet network is available");
+                            if (mAutoReconnect && mConnectionState != ConnectionState.CONNECTED && mConnectionState != ConnectionState.CONNECTING) {
+                                Log.i(TAG, "Network restored. Triggering immediate reconnect!");
+                                mHandler.removeCallbacks(mReconnectRunnable);
+                                mHandler.post(mReconnectRunnable);
+                            }
+                        }
+                    };
+                    cm.registerNetworkCallback(request, mNetworkCallback);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to register NetworkCallback", e);
+            }
+        }
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+        mHandler.removeCallbacks(mReconnectRunnable);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mNetworkCallback != null) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    cm.unregisterNetworkCallback(mNetworkCallback);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to unregister NetworkCallback", e);
+            }
+        }
         try {
             unregisterReceiver(mBluetoothReceiver);
         } catch (IllegalArgumentException e) {
@@ -396,6 +456,13 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         }
 
         mCallbacks.onConnected();
+
+        // Reset reconnect delay on successful connection
+        mReconnectDelay = INITIAL_RECONNECT_DELAY;
+        setReconnecting(false);
+
+        // Auto-join previously remembered channel (Anysecu Walkie-Talkie feature)
+        autoJoinLastChannel();
     }
 
     @Override
@@ -406,14 +473,15 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     @Override
     public void onConnectionDisconnected(HumlaException e) {
         if (e != null) {
-            Log.e(TAG, "Error: " + e.getMessage() + " (reason: " + e.getReason().name() + ")");
+            Log.e(TAG, "Connection lost: " + e.getMessage() + " (reason: " + e.getReason().name() + ")");
             mConnectionState = ConnectionState.CONNECTION_LOST;
 
-            setReconnecting(mAutoReconnect
-                    && e.getReason() == HumlaException.HumlaDisconnectReason.CONNECTION_ERROR);
+            // Robust auto-reconnect: if auto-reconnect is enabled, NEVER abandon reconnect on any unexpected disconnection!
+            setReconnecting(mAutoReconnect);
         } else {
-            Log.v(TAG, "Disconnected");
+            Log.v(TAG, "Disconnected cleanly by user action");
             mConnectionState = ConnectionState.DISCONNECTED;
+            setReconnecting(false);
         }
 
         if(mWakeLock.isHeld()) {
@@ -458,38 +526,26 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     }
 
     public void setReconnecting(boolean reconnecting) {
-        if (mReconnecting == reconnecting)
-            return;
-
         mReconnecting = reconnecting;
-        if (reconnecting) {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-            NetworkInfo info = cm.getActiveNetworkInfo();
-            if (info != null && info.isConnected()) {
-                Log.v(TAG, "Connection lost due to non-connectivity issue. Start reconnect polling.");
-                Handler mainHandler = new Handler();
-                mainHandler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (mReconnecting) connect();
-                    }
-                }, mAutoReconnectDelay);
-            } else {
-                // In the event that we've lost connectivity, don't poll. Wait until network
-                // returns before we resume connection attempts.
-                Log.v(TAG, "Connection lost due to connectivity issue. Waiting until network returns.");
-                try {
-                    registerReceiver(mConnectivityReceiver,
-                            new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
-                } catch (IllegalArgumentException e) {
-                    Log.e(TAG, "Error registering connectivity receiver: " + e.getMessage());
-                }
+        mHandler.removeCallbacks(mReconnectRunnable);
+
+        if (reconnecting && mAutoReconnect) {
+            int delay = mReconnectDelay;
+            Log.i(TAG, "Watchdog: Scheduling reconnect attempt in " + delay + " ms (exponential backoff)");
+            mHandler.postDelayed(mReconnectRunnable, delay);
+            // Exponential backoff up to 60s
+            mReconnectDelay = Math.min(mReconnectDelay * 2, MAX_RECONNECT_DELAY);
+
+            try {
+                registerReceiver(mConnectivityReceiver,
+                        new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+            } catch (Exception ignored) {
             }
         } else {
+            mReconnectDelay = INITIAL_RECONNECT_DELAY;
             try {
                 unregisterReceiver(mConnectivityReceiver);
-            } catch (IllegalArgumentException e) {
-                Log.e(TAG, "Error unregistering connectivity receiver: " + e.getMessage());
+            } catch (Exception ignored) {
             }
         }
     }
@@ -949,6 +1005,60 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         usb.setSession(session);
         usb.setChannelId(channel);
         getConnection().sendTCPMessage(usb.build(), HumlaTCPMessageType.UserState);
+
+        try {
+            if (session == getSessionId() && channel > 0) {
+                saveLastChannel(channel);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String getLastChannelPrefKey() {
+        if (mServer != null) {
+            return "last_chan_" + mServer.getHost() + "_" + mServer.getPort();
+        }
+        return "last_chan_default";
+    }
+
+    public void saveLastChannel(int channelId) {
+        if (channelId > 0) {
+            try {
+                SharedPreferences prefs = getSharedPreferences("humla_channels", MODE_PRIVATE);
+                prefs.edit().putInt(getLastChannelPrefKey(), channelId).apply();
+                Log.i(TAG, "Saved last active channel ID: " + channelId + " for server: " + getLastChannelPrefKey());
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to save last channel", e);
+            }
+        }
+    }
+
+    public int getLastSavedChannel() {
+        try {
+            SharedPreferences prefs = getSharedPreferences("humla_channels", MODE_PRIVATE);
+            return prefs.getInt(getLastChannelPrefKey(), -1);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private void autoJoinLastChannel() {
+        final int lastChannel = getLastSavedChannel();
+        if (lastChannel > 0) {
+            mHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (isSynchronized()) {
+                        Log.i(TAG, "Auto-joining remembered channel ID: " + lastChannel);
+                        try {
+                            joinChannel(lastChannel);
+                        } catch (Exception e) {
+                            Log.w(TAG, "Error auto-joining channel " + lastChannel, e);
+                        }
+                    }
+                }
+            }, 600);
+        }
     }
 
     @Override
