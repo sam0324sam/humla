@@ -994,6 +994,16 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         mToggleInputMode.setTalkingOn(talking);
     }
 
+    /**
+     * Checks if AudioHandler is currently playing or actively receiving audio.
+     */
+    public boolean isAudioOutputActive() {
+        if (mAudioHandler != null) {
+            return mAudioHandler.isAudioOutputActive();
+        }
+        return false;
+    }
+
     @Override
     public void joinChannel(int channel) {
         moveUserToChannel(getSessionId(), channel);

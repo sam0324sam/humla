@@ -50,7 +50,9 @@ public class PreprocessingEncoder implements IEncoder {
         arg.put(30000);
         mPreprocessor.control(Speex.SpeexPreprocessState.SPEEX_PREPROCESS_SET_AGC_TARGET, arg);
 
-        // TODO AGC max gain, decrement, noise suppress, echo
+        // Maximum ambient noise attenuation: -30 dB for heavy vehicle/wind noise rejection
+        arg.put(-30);
+        mPreprocessor.control(Speex.SpeexPreprocessState.SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, arg);
 
         // Increase VAD difficulty
         arg.put(99);

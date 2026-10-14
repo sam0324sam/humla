@@ -20,6 +20,8 @@ package se.lublin.humla.audio;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.audiofx.AcousticEchoCanceler;
+import android.media.audiofx.AutomaticGainControl;
+import android.media.audiofx.NoiseSuppressor;
 import android.util.Log;
 
 import se.lublin.humla.exception.AudioInitializationException;
@@ -39,6 +41,8 @@ public class AudioInput implements Runnable {
     private AudioRecord mAudioRecord;
     private final String mEchoCancellationMethod;
     private AcousticEchoCanceler aec;
+    private NoiseSuppressor mNoiseSuppressor;
+    private AutomaticGainControl mAgc;
     private final int mFrameSize;
 
     private Thread mRecordThread;
@@ -61,6 +65,7 @@ public class AudioInput implements Runnable {
                 if (enableEchoCancellation()) {
                     Log.w(TAG, "echo cancellation enabled: " + mEchoCancellationMethod);
                 }
+                setupHardwareAudioEffects();
                 break;
             } catch (AudioInitializationException e) {
                 // Continue iteration, probing for a supported sample rate.
@@ -123,6 +128,50 @@ public class AudioInput implements Runnable {
     }
 
     /**
+     * Initializes hardware-level audio post-processing (Noise Suppression and AGC).
+     */
+    private void setupHardwareAudioEffects() {
+        if (mAudioRecord == null) return;
+        int sessionId = mAudioRecord.getAudioSessionId();
+
+        // 1. Hardware Noise Suppressor
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                if (mNoiseSuppressor != null) {
+                    mNoiseSuppressor.release();
+                }
+                mNoiseSuppressor = NoiseSuppressor.create(sessionId);
+                if (mNoiseSuppressor != null) {
+                    mNoiseSuppressor.setEnabled(true);
+                    Log.i(TAG, "Hardware NoiseSuppressor enabled on session: " + sessionId);
+                }
+            } else {
+                Log.w(TAG, "Hardware NoiseSuppressor not available");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to enable NoiseSuppressor", e);
+        }
+
+        // 2. Hardware Automatic Gain Control
+        try {
+            if (AutomaticGainControl.isAvailable()) {
+                if (mAgc != null) {
+                    mAgc.release();
+                }
+                mAgc = AutomaticGainControl.create(sessionId);
+                if (mAgc != null) {
+                    mAgc.setEnabled(true);
+                    Log.i(TAG, "Hardware AutomaticGainControl enabled on session: " + sessionId);
+                }
+            } else {
+                Log.w(TAG, "Hardware AutomaticGainControl not available");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to enable AutomaticGainControl", e);
+        }
+    }
+
+    /**
      * Starts the recording thread.
      * Not thread-safe.
      */
@@ -159,6 +208,14 @@ public class AudioInput implements Runnable {
             if (aec != null) {
                 aec.release();
                 aec = null;
+            }
+            if (mNoiseSuppressor != null) {
+                mNoiseSuppressor.release();
+                mNoiseSuppressor = null;
+            }
+            if (mAgc != null) {
+                mAgc.release();
+                mAgc = null;
             }
             mAudioRecord.release();
             mAudioRecord = null;

@@ -203,6 +203,16 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
         }
     }
 
+    /**
+     * Checks if AudioOutput is actively playing or receiving speech stream packets.
+     */
+    public boolean isAudioOutputActive() {
+        synchronized (mOutput) {
+            return mOutput.hasActiveSpeech() ||
+                    (android.os.SystemClock.elapsedRealtime() - mOutput.getLastVoicePacketTime() < 400);
+        }
+    }
+
     public HumlaUDPMessageType getCodec() {
         return mCodec;
     }

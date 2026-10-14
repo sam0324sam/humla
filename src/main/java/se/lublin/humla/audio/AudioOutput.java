@@ -57,6 +57,7 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
     private final Object mInactiveLock = new Object(); // Lock that the audio thread waits on when there's no audio to play. Wake when we get a frame.
     private final Lock mPacketLock;
     private boolean mRunning = false;
+    private volatile long mLastVoicePacketTime = 0;
     private Handler mMainHandler;
     private AudioOutputListener mListener;
     private final IAudioMixer<float[], short[]> mMixer;
@@ -207,6 +208,8 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
         if(!mRunning)
             return;
 
+        mLastVoicePacketTime = android.os.SystemClock.elapsedRealtime();
+
         byte msgFlags = (byte) (data[0] & 0x1f);
         PacketBuffer pds = new PacketBuffer(data, data.length);
         pds.skip(1);
@@ -244,6 +247,19 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
             }
         }
 
+    }
+
+    public boolean hasActiveSpeech() {
+        mPacketLock.lock();
+        try {
+            return !mAudioOutputs.isEmpty();
+        } finally {
+            mPacketLock.unlock();
+        }
+    }
+
+    public long getLastVoicePacketTime() {
+        return mLastVoicePacketTime;
     }
 
     @Override
