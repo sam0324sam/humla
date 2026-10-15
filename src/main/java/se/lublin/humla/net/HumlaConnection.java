@@ -60,6 +60,7 @@ import se.lublin.humla.util.HumlaException;
 
 public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP.UDPConnectionListener {
     private static final String TAG = HumlaConnection.class.getName();
+    public static final int PING_INTERVAL_SECONDS = 15;
 
     /**
      * Message types that aren't shown in logcat.
@@ -136,9 +137,9 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
                 enableForceTCP();
             }
 
-            // Start TCP/UDP ping thread. FIXME is this the right place?
+            // Start TCP/UDP ping thread with 15s power-efficient interval
             try {
-                mPingTask = mPingExecutorService.scheduleAtFixedRate(mPingRunnable, 0, 5, TimeUnit.SECONDS);
+                mPingTask = mPingExecutorService.scheduleAtFixedRate(mPingRunnable, 0, PING_INTERVAL_SECONDS, TimeUnit.SECONDS);
             } catch(RejectedExecutionException e) {
                 Log.w(TAG, "failed to start ping thread, in \"shutdown\"? ", e);
             }

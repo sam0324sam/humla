@@ -227,6 +227,35 @@ public class AudioInput implements Runnable {
     }
 
     /**
+     * Pauses the AudioRecord hardware capture without terminating the record thread.
+     * Releases system AudioIn WakeLock and powers down microphone hardware during PTT standby.
+     */
+    public synchronized void pauseRecording() {
+        if (mAudioRecord != null && mRecording && mAudioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+            try {
+                mAudioRecord.stop();
+                Log.d(TAG, "AudioRecord paused (Microphone hardware power-down & AudioIn WakeLock released)");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to pause AudioRecord", e);
+            }
+        }
+    }
+
+    /**
+     * Resumes the AudioRecord hardware capture when user engages PTT.
+     */
+    public synchronized void resumeRecording() {
+        if (mAudioRecord != null && mRecording && mAudioRecord.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+            try {
+                mAudioRecord.startRecording();
+                Log.d(TAG, "AudioRecord resumed on PTT transmission");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to resume AudioRecord", e);
+            }
+        }
+    }
+
+    /**
      * @return the sample rate used by the AudioRecord instance.
      */
     public int getSampleRate() {

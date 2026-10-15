@@ -32,6 +32,7 @@ import se.lublin.humla.audio.encoder.OpusEncoder;
 import se.lublin.humla.audio.encoder.PreprocessingEncoder;
 import se.lublin.humla.audio.encoder.ResamplingEncoder;
 import se.lublin.humla.audio.inputmode.IInputMode;
+import se.lublin.humla.audio.inputmode.ToggleInputMode;
 import se.lublin.humla.exception.AudioException;
 import se.lublin.humla.exception.AudioInitializationException;
 import se.lublin.humla.exception.NativeAudioException;
@@ -477,7 +478,13 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
 
         mTalking = talking;
         if (!talking) {
-            mInputMode.waitForInput();
+            if (mInputMode instanceof ToggleInputMode) {
+                mInput.pauseRecording();
+                mInputMode.waitForInput();
+                mInput.resumeRecording();
+            } else {
+                mInputMode.waitForInput();
+            }
         }
     }
 
