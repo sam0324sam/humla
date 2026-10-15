@@ -29,6 +29,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkRequest;
+import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -147,6 +148,7 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     private WhisperTargetList mWhisperTargetList;
 
     private PowerManager.WakeLock mWakeLock;
+    private WifiManager.WifiLock mWifiLock;
     private Handler mHandler;
     private HumlaCallbacks mCallbacks;
 
@@ -285,6 +287,14 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         super.onCreate();
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
         mWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Humla:HumlaService");
+        try {
+            WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+            if (wifiManager != null) {
+                mWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Humla:WifiLock");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to create WifiLock", e);
+        }
         mHandler = new Handler(getMainLooper());
         mCallbacks = new HumlaCallbacks();
         mAudioBuilder = new AudioHandler.Builder()
@@ -348,6 +358,16 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             unregisterReceiver(mBluetoothReceiver);
         } catch (IllegalArgumentException e) {
             Log.e(TAG, "Error unregistering bluetooth receiver: " + e.getMessage());
+        }
+        if (mWakeLock != null && mWakeLock.isHeld()) {
+            mWakeLock.release();
+        }
+        if (mWifiLock != null && mWifiLock.isHeld()) {
+            try {
+                mWifiLock.release();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to release WifiLock on destroy", e);
+            }
         }
     }
 
@@ -440,6 +460,13 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
 
         Log.v(TAG, "Connected");
         mWakeLock.acquire();
+        if (mWifiLock != null && !mWifiLock.isHeld()) {
+            try {
+                mWifiLock.acquire();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to acquire WifiLock", e);
+            }
+        }
 
         try {
             mAudioHandler = mAudioBuilder.initialize(
@@ -484,8 +511,15 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             setReconnecting(false);
         }
 
-        if(mWakeLock.isHeld()) {
+        if (mWakeLock.isHeld()) {
             mWakeLock.release();
+        }
+        if (mWifiLock != null && mWifiLock.isHeld()) {
+            try {
+                mWifiLock.release();
+            } catch (Exception ex) {
+                Log.w(TAG, "Failed to release WifiLock", ex);
+            }
         }
 
         if (mAudioHandler != null) {
