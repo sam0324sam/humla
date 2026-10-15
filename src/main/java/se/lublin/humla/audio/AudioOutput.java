@@ -252,7 +252,11 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
     public boolean hasActiveSpeech() {
         mPacketLock.lock();
         try {
-            return !mAudioOutputs.isEmpty();
+            if (mAudioOutputs.isEmpty()) {
+                return false;
+            }
+            long now = android.os.SystemClock.elapsedRealtime();
+            return (mLastVoicePacketTime > 0 && (now - mLastVoicePacketTime < 400));
         } finally {
             mPacketLock.unlock();
         }
