@@ -60,7 +60,7 @@ import se.lublin.humla.util.HumlaException;
 
 public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP.UDPConnectionListener {
     private static final String TAG = HumlaConnection.class.getName();
-    public static final int PING_INTERVAL_SECONDS = 15;
+    public static final int PING_INTERVAL_SECONDS = 7;
 
     /**
      * Message types that aren't shown in logcat.

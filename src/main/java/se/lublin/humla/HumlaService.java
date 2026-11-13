@@ -1228,6 +1228,19 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     }
 
     @Override
+    public void setChannelDescription(int channel, String description) {
+        try {
+            if (!isSynchronized() || getConnection() == null) return;
+            Mumble.ChannelState.Builder csb = Mumble.ChannelState.newBuilder();
+            csb.setChannelId(channel);
+            csb.setDescription(description);
+            getConnection().sendTCPMessage(csb.build(), HumlaTCPMessageType.ChannelState);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed setting channel description for " + channel + ": " + e.getMessage());
+        }
+    }
+
+    @Override
     public void setPrioritySpeaker(int session, boolean priority) {
         Mumble.UserState.Builder usb = Mumble.UserState.newBuilder();
         usb.setSession(session);

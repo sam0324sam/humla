@@ -144,6 +144,8 @@ public interface IHumlaSession {
 
     void setUserComment(int session, String comment);
 
+    void setChannelDescription(int channel, String description);
+
     void setPrioritySpeaker(int session, boolean priority);
 
     void removeChannel(int channel);
