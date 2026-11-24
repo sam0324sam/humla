@@ -60,8 +60,13 @@ import se.lublin.humla.util.HumlaException;
 
 public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP.UDPConnectionListener {
     private static final String TAG = HumlaConnection.class.getName();
-    // Paired with NAS Murmur timeout=25s: cuts radio ping wakeups by 56% vs 7s and allows 4G RRC_IDLE sleep
-    public static final int PING_INTERVAL_SECONDS = 16;
+    // Paired with NAS Murmur timeout=75s:
+    // - Wi-Fi (45s): clears Qualcomm's 15s Wi-Fi active-tail timer (~66% radio sleep vs ~4% at 16s)
+    // - Cellular (25s): preserves carrier 4G UDP NAT mappings (~30s) while allowing RRC_IDLE sleep
+    public static final int PING_INTERVAL_WIFI_SECONDS = 45;
+    public static final int PING_INTERVAL_CELLULAR_SECONDS = 25;
+    public static final int PING_INTERVAL_SECONDS = PING_INTERVAL_CELLULAR_SECONDS;
+    private volatile int mPingIntervalSeconds = PING_INTERVAL_CELLULAR_SECONDS;
 
     /**
      * Message types that aren't shown in logcat.
@@ -138,11 +143,15 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
                 enableForceTCP();
             }
 
-            // Start TCP/UDP ping thread with 15s power-efficient interval
-            try {
-                mPingTask = mPingExecutorService.scheduleAtFixedRate(mPingRunnable, 0, PING_INTERVAL_SECONDS, TimeUnit.SECONDS);
-            } catch(RejectedExecutionException e) {
-                Log.w(TAG, "failed to start ping thread, in \"shutdown\"? ", e);
+            // Start TCP/UDP ping thread using current transport-aware interval (Wi-Fi 45s / Cellular 25s)
+            synchronized (HumlaConnection.this) {
+                try {
+                    int interval = mPingIntervalSeconds;
+                    mPingTask = mPingExecutorService.scheduleAtFixedRate(mPingRunnable, 0, interval, TimeUnit.SECONDS);
+                    Log.i(TAG, "Started keepalive ping scheduler (interval=" + interval + "s)");
+                } catch(RejectedExecutionException e) {
+                    Log.w(TAG, "failed to start ping thread, in \"shutdown\"? ", e);
+                }
             }
 
             mSession = msg.getSession();
@@ -391,6 +400,29 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
      */
     public void setForceTCP(boolean forceTcp) {
         mForceTCP = forceTcp;
+    }
+
+    /**
+     * Dynamically updates the keepalive ping interval (e.g. 45s on Wi-Fi, 25s on Cellular).
+     * Safely reschedules the active ping timer if already synchronized.
+     */
+    public synchronized void setPingIntervalSeconds(int seconds) {
+        int clamped = Math.max(10, Math.min(60, seconds));
+        if (mPingIntervalSeconds == clamped) {
+            return;
+        }
+        mPingIntervalSeconds = clamped;
+        Log.i(TAG, "Updated keepalive ping interval to " + clamped + "s");
+        if (mSynchronized && mPingExecutorService != null && !mPingExecutorService.isShutdown()) {
+            if (mPingTask != null) {
+                mPingTask.cancel(false);
+            }
+            try {
+                mPingTask = mPingExecutorService.scheduleAtFixedRate(mPingRunnable, clamped, clamped, TimeUnit.SECONDS);
+            } catch (RejectedExecutionException e) {
+                Log.w(TAG, "Failed to reschedule ping task", e);
+            }
+        }
     }
 
     /**

@@ -185,6 +185,32 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         }
     };
 
+    private int resolveOptimalPingIntervalSeconds() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network active = cm.getActiveNetwork();
+                if (active != null) {
+                    NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+                    if (caps != null
+                            && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                            && !caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                        return HumlaConnection.PING_INTERVAL_WIFI_SECONDS;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return HumlaConnection.PING_INTERVAL_CELLULAR_SECONDS;
+    }
+
+    private void updateActiveConnectionPingInterval() {
+        HumlaConnection conn = mConnection;
+        if (conn != null) {
+            conn.setPingIntervalSeconds(resolveOptimalPingIntervalSeconds());
+        }
+    }
+
     private boolean isNetworkAvailable() {
         try {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
@@ -348,6 +374,7 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
                         @Override
                         public void onAvailable(Network network) {
                             Log.i(TAG, "NetworkCallback: System reported Internet network is available");
+                            updateActiveConnectionPingInterval();
                             if (mAutoReconnect && mConnectionState != ConnectionState.CONNECTED && mConnectionState != ConnectionState.CONNECTING) {
                                 Log.i(TAG, "Network restored. Resetting backoff and triggering immediate reconnect!");
                                 mReconnectDelay = INITIAL_RECONNECT_DELAY;
@@ -357,10 +384,17 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
                         }
 
                         @Override
+                        public void onCapabilitiesChanged(Network network, NetworkCapabilities networkCapabilities) {
+                            updateActiveConnectionPingInterval();
+                        }
+
+                        @Override
                         public void onLost(Network network) {
                             if (!isNetworkAvailable()) {
                                 Log.i(TAG, "NetworkCallback: No active internet network, pausing reconnect timer.");
                                 mHandler.removeCallbacks(mReconnectRunnable);
+                            } else {
+                                updateActiveConnectionPingInterval();
                             }
                         }
                     };
@@ -434,6 +468,7 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             mWhisperTargetList.clear();
 
             mConnection = new HumlaConnection(this);
+            mConnection.setPingIntervalSeconds(resolveOptimalPingIntervalSeconds());
             mConnection.setForceTCP(mForceTcp);
             mConnection.setUseTor(mUseTor);
             mConnection.setKeys(mCertificate, mCertificatePassword);
