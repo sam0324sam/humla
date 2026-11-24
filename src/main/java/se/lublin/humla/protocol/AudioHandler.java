@@ -25,8 +25,6 @@ import android.util.Log;
 import se.lublin.humla.R;
 import se.lublin.humla.audio.AudioInput;
 import se.lublin.humla.audio.AudioOutput;
-import se.lublin.humla.audio.encoder.CELT11Encoder;
-import se.lublin.humla.audio.encoder.CELT7Encoder;
 import se.lublin.humla.audio.encoder.IEncoder;
 import se.lublin.humla.audio.encoder.OpusEncoder;
 import se.lublin.humla.audio.encoder.PreprocessingEncoder;
@@ -238,19 +236,12 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
 
         IEncoder encoder;
         switch (codec) {
-            case UDPVoiceCELTAlpha:
-                encoder = new CELT7Encoder(SAMPLE_RATE, AudioHandler.FRAME_SIZE, 1,
-                        mFramesPerPacket, mBitrate, MAX_BUFFER_SIZE);
-                break;
-            case UDPVoiceCELTBeta:
-                encoder = new CELT11Encoder(SAMPLE_RATE, 1, mFramesPerPacket);
-                break;
             case UDPVoiceOpus:
                 encoder = new OpusEncoder(SAMPLE_RATE, 1, FRAME_SIZE, mFramesPerPacket, mBitrate,
                         MAX_BUFFER_SIZE);
                 break;
             default:
-                Log.w(TAG, "Unsupported codec, input disabled.");
+                Log.w(TAG, "Unsupported codec (" + codec + "), Opus-only client.");
                 return;
         }
 

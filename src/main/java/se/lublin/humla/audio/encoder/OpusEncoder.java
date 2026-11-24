@@ -18,6 +18,7 @@
 package se.lublin.humla.audio.encoder;
 
 import com.googlecode.javacpp.IntPointer;
+import com.googlecode.javacpp.Loader;
 import com.googlecode.javacpp.Pointer;
 
 import java.nio.BufferOverflowException;
@@ -32,6 +33,11 @@ import se.lublin.humla.net.PacketBuffer;
 * Created by andrew on 08/12/14.
 */
 public class OpusEncoder implements IEncoder {
+    static {
+        // Ensure libjniopus is loaded before any JavaCPP IntPointer allocation
+        Loader.load(Opus.class);
+    }
+
     private final byte[] mBuffer;
     private final short[] mAudioBuffer;
     private final int mFramesPerPacket;

@@ -27,8 +27,6 @@ import java.util.Queue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import se.lublin.humla.audio.javacpp.CELT11;
-import se.lublin.humla.audio.javacpp.CELT7;
 import se.lublin.humla.audio.javacpp.Opus;
 import se.lublin.humla.audio.javacpp.Speex;
 import se.lublin.humla.exception.NativeAudioException;
@@ -85,15 +83,11 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                 mAudioBufferSize *= 12;
                 mDecoder = new Opus.OpusDecoder(AudioHandler.SAMPLE_RATE, 1);
                 break;
-            case UDPVoiceCELTBeta:
-                mDecoder = new CELT11.CELT11Decoder(AudioHandler.SAMPLE_RATE, 1);
-                break;
-            case UDPVoiceCELTAlpha:
-                mDecoder = new CELT7.CELT7Decoder(AudioHandler.SAMPLE_RATE, AudioHandler.FRAME_SIZE, 1);
-                break;
             case UDPVoiceSpeex:
                 mDecoder = new Speex.SpeexDecoder();
                 break;
+            default:
+                throw new NativeAudioException("Unsupported legacy codec (Opus-only build): " + codec);
         }
 
         mBuffer = new float[mAudioBufferSize*2]; // Make initial buffer size larger so we can save performance by not resizing at runtime.

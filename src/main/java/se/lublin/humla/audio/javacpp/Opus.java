@@ -69,6 +69,9 @@ public class Opus {
     }
 
     public static class OpusDecoder implements IDecoder {
+        static {
+            Loader.load(Opus.class);
+        }
 
         private Pointer mState;
 

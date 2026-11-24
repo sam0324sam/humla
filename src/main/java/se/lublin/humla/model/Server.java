@@ -20,8 +20,7 @@ package se.lublin.humla.model;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.Log;
-
-import com.google.common.net.InetAddresses;
+import android.util.Patterns;
 
 import org.minidns.hla.ResolverApi;
 import org.minidns.hla.SrvResolverResult;
@@ -173,6 +172,23 @@ public class Server implements Parcelable {
         return mResolvedPort;
     }
 
+    private static boolean isIpLiteral(String host) {
+        if (host == null || host.isEmpty()) return false;
+        // IPv4 literal
+        if (Patterns.IP_ADDRESS.matcher(host).matches()) return true;
+        // IPv6 literal (contains colon and only hex/colon/dot/brackets)
+        if (host.indexOf(':') >= 0) {
+            for (int i = 0; i < host.length(); i++) {
+                char c = host.charAt(i);
+                boolean ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+                        || c == ':' || c == '.' || c == '[' || c == ']';
+                if (!ok) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     private synchronized void srvResolve() {
         if (mResolvedHost != null) {
             return;
@@ -183,9 +199,8 @@ public class Server implements Parcelable {
             mResolvedPort = mPort;
             return;
         }
-        // skip also IP addresses and Tor Onion Services (a pseudo-TLD)
-        if (InetAddresses.isInetAddress(mHost)
-                || mHost.endsWith(".onion")) {
+        // skip also IP addresses
+        if (isIpLiteral(mHost)) {
             mResolvedHost = mHost;
             mResolvedPort = Constants.DEFAULT_PORT;
             return;
