@@ -105,8 +105,8 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
     private final CryptState mCryptState = new CryptState();
 
     // Latency
-    private long mLastUDPPing;
-    private long mLastTCPPing;
+    private volatile long mLastUDPPing;
+    private volatile long mLastTCPPing;
 
     // Server
     private String mHost;
@@ -253,17 +253,17 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
 
         @Override
         public void messageUDPPing(byte[] data) {
-//            Log.v(TAG, "IN: UDP Ping");
-            byte[] timedata = new byte[8];
-            System.arraycopy(data, 1, timedata, 0, 8);
-            ByteBuffer buffer = ByteBuffer.allocate(8);
-            buffer.put(timedata);
-            buffer.flip();
-
-            long timestamp = buffer.getLong();
+            if (data == null || data.length < 9) return;
+            long timestamp = ((long) (data[1] & 0xFF) << 56)
+                    | ((long) (data[2] & 0xFF) << 48)
+                    | ((long) (data[3] & 0xFF) << 40)
+                    | ((long) (data[4] & 0xFF) << 32)
+                    | ((long) (data[5] & 0xFF) << 24)
+                    | ((long) (data[6] & 0xFF) << 16)
+                    | ((long) (data[7] & 0xFF) << 8)
+                    | ((long) (data[8] & 0xFF));
             long now = getElapsed();
-            mLastUDPPing = now-timestamp;
-            // TODO refresh UDP?
+            mLastUDPPing = now - timestamp;
         }
     };
 

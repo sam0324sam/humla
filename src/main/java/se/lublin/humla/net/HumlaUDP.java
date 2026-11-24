@@ -18,6 +18,7 @@
 package se.lublin.humla.net;
 
 import android.os.Handler;
+import android.os.Process;
 import android.util.Log;
 
 import org.jetbrains.annotations.NotNull;
@@ -86,6 +87,7 @@ public class HumlaUDP implements Runnable {
 
     @Override
     public void run() {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         Thread outgoingConsumerThread = null;
         mConnected = true;
         try {
@@ -120,12 +122,8 @@ public class HumlaUDP implements Runnable {
 
                     if (mListener != null) {
                         if (buffer != null) {
-                            mCallbackHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    mListener.onUDPDataReceived(buffer);
-                                }
-                            });
+                            // Direct dispatch on the AUDIO-priority UDP thread (bypasses UI Main Thread queue & eliminates 50 Runnable allocs/sec)
+                            mListener.onUDPDataReceived(buffer);
                         } else if (mCryptState.getLastGoodElapsed() > 5000000 &&
                                 mCryptState.getLastRequestElapsed() > 5000000) {
                             mCryptState.resetLastRequestTime();
@@ -237,6 +235,7 @@ public class HumlaUDP implements Runnable {
 
         @Override
         public void run() {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
             Log.d(TAG, "Datagram outbox consumer active");
             boolean interrupted = false;
             while (!interrupted) {

@@ -68,6 +68,9 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
     private int mBufferFilled, mLastConsume = 0;
     private int ucFlags;
     private IntPointer avail = new IntPointer(1);
+    private final IntPointer mDelayPointer = new IntPointer(1);
+    private final ByteBuffer mDirectPacketBuffer = ByteBuffer.allocateDirect(4096);
+    private TalkState mLastReportedTalkState = null;
 
     private TalkStateListener mTalkStateListener;
 
@@ -104,9 +107,11 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
             mFadeIn[i] = mFadeOut[AudioHandler.FRAME_SIZE-i-1] = (float) Math.sin((float) i * mul);
 
         mJitterBuffer = new Speex.JitterBuffer(AudioHandler.FRAME_SIZE);
+        // Low-latency walkie-talkie jitter margin: 40ms (4 x 10ms frames) instead of 100ms, cutting 60ms RX latency
         IntPointer margin = new IntPointer(1);
-        margin.put(10 * AudioHandler.FRAME_SIZE);
+        margin.put(4 * AudioHandler.FRAME_SIZE);
         mJitterBuffer.control(Speex.JitterBuffer.JITTER_BUFFER_SET_MARGIN, margin);
+        margin.deallocate();
     }
 
     public void addFrameToBuffer(PacketBuffer pb, byte flags, int seq) {
@@ -146,9 +151,7 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                 int size = pb.left();
                 byte[] data = pb.dataBlock(size);
                 Speex.JitterBufferPacket packet = new Speex.JitterBufferPacket(data, size, AudioHandler.FRAME_SIZE * seq, samples, 0, flags);
-                synchronized (mJitterLock) {
-                    mJitterBuffer.put(packet);
-                }
+                mJitterBuffer.put(packet);
             } catch (BufferOverflowException e) {
                 e.printStackTrace();
             }
@@ -204,7 +207,8 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                 }
 
                 if(mFrames.isEmpty()) {
-                    ByteBuffer packet = ByteBuffer.allocateDirect(4096);
+                    mDirectPacketBuffer.clear();
+                    ByteBuffer packet = mDirectPacketBuffer;
                     Speex.JitterBufferPacket jbp = new Speex.JitterBufferPacket(packet, 4096, 0, 0, 0, 0);
                     int result;
 
@@ -268,10 +272,12 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
 
                         decodedSamples = mDecoder.decodeFloat(data, data.limit(), mOut, mAudioBufferSize);
 
-                        if(mFrames.isEmpty())
+                        if(mFrames.isEmpty()) {
+                            mDelayPointer.put(0);
                             synchronized (mJitterLock) {
-                                mJitterBuffer.updateDelay(null, new IntPointer(1));
+                                mJitterBuffer.updateDelay(null, mDelayPointer);
                             }
+                        }
 
                         if(mFrames.isEmpty() && mHasTerminator)
                             nextAlive = false;
@@ -321,7 +327,10 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                 break;
         }
 
-        mTalkStateListener.onTalkStateUpdated(mUser.getSession(), talkState);
+        if (talkState != mLastReportedTalkState) {
+            mLastReportedTalkState = talkState;
+            mTalkStateListener.onTalkStateUpdated(mUser.getSession(), talkState);
+        }
 
         boolean tmp = mLastAlive;
         mLastAlive = nextAlive;
@@ -363,6 +372,11 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
     public void destroy() {
         if(mDecoder != null) mDecoder.destroy();
         mJitterBuffer.destroy();
+        if (avail != null) {
+            avail.deallocate();
+            avail = null;
+        }
+        mDelayPointer.deallocate();
     }
 
     /**
