@@ -188,6 +188,9 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     private final BroadcastReceiver mConnectivityReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (isInitialStickyBroadcast()) {
+                return;
+            }
             if (!mReconnecting) {
                 try {
                     unregisterReceiver(this);
@@ -378,6 +381,16 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     protected void connect() {
         try {
             setReconnecting(false);
+            if (mConnection != null) {
+                mConnection.detachListener();
+                mConnection.disconnect();
+                mConnection = null;
+            }
+            if (mAudioHandler != null) {
+                mAudioHandler.shutdown();
+                mAudioHandler = null;
+            }
+            mModelHandler = null;
             mConnectionState = ConnectionState.DISCONNECTED;
             mVoiceTargetId = 0;
             mWhisperTargetList.clear();

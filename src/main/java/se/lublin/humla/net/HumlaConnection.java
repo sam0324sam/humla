@@ -151,7 +151,9 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
             mMainHandler.post(new Runnable() {
                 @Override
                 public void run() {
-                    mListener.onConnectionSynchronized();
+                    if (mListener != null) {
+                        mListener.onConnectionSynchronized();
+                    }
                 }
             });
 
@@ -472,6 +474,10 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
         return mForceTCP || mUseTor;
     }
 
+    public void detachListener() {
+        mListener = null;
+    }
+
     /**
      * Gracefully shuts down all networking. Blocks until all network threads have stopped.
      */
@@ -485,7 +491,7 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
         if(mPingTask != null) mPingTask.cancel(true);
         if(mTCP != null) mTCP.disconnect();
         if(mUDP != null) mUDP.disconnect();
-        mPingExecutorService.shutdown();
+        if(mPingExecutorService != null) mPingExecutorService.shutdown();
 
         mTCP = null;
         mUDP = null;
@@ -502,7 +508,9 @@ public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP
         mError = e;
 
         e.printStackTrace();
-        mListener.onConnectionDisconnected(e);
+        if (mListener != null) {
+            mListener.onConnectionDisconnected(e);
+        }
 
         disconnect();
     }
