@@ -177,10 +177,32 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             if (mConnectionState == ConnectionState.CONNECTED || mConnectionState == ConnectionState.CONNECTING) {
                 return;
             }
+            if (!isNetworkAvailable()) {
+                Log.i(TAG, "Watchdog paused: network is offline, waiting for NetworkCallback.");
+                return;
+            }
             Log.i(TAG, "Watchdog triggered: attempting auto-reconnect...");
             connect();
         }
     };
+
+    private boolean isNetworkAvailable() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network active = cm.getActiveNetwork();
+                if (active == null) return false;
+                NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+                return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            } else {
+                NetworkInfo info = cm.getActiveNetworkInfo();
+                return info != null && info.isConnected();
+            }
+        } catch (Exception e) {
+            return true;
+        }
+    }
 
     /**
      * Listen for legacy connectivity changes in the reconnection state, and reconnect accordingly.
@@ -321,21 +343,34 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
             try {
                 ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
                 if (cm != null) {
-                    NetworkRequest request = new NetworkRequest.Builder()
-                            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                            .build();
                     mNetworkCallback = new ConnectivityManager.NetworkCallback() {
                         @Override
                         public void onAvailable(Network network) {
                             Log.i(TAG, "NetworkCallback: System reported Internet network is available");
                             if (mAutoReconnect && mConnectionState != ConnectionState.CONNECTED && mConnectionState != ConnectionState.CONNECTING) {
-                                Log.i(TAG, "Network restored. Triggering immediate reconnect!");
+                                Log.i(TAG, "Network restored. Resetting backoff and triggering immediate reconnect!");
+                                mReconnectDelay = INITIAL_RECONNECT_DELAY;
                                 mHandler.removeCallbacks(mReconnectRunnable);
                                 mHandler.post(mReconnectRunnable);
                             }
                         }
+
+                        @Override
+                        public void onLost(Network network) {
+                            if (!isNetworkAvailable()) {
+                                Log.i(TAG, "NetworkCallback: No active internet network, pausing reconnect timer.");
+                                mHandler.removeCallbacks(mReconnectRunnable);
+                            }
+                        }
                     };
-                    cm.registerNetworkCallback(request, mNetworkCallback);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        cm.registerDefaultNetworkCallback(mNetworkCallback);
+                    } else {
+                        NetworkRequest request = new NetworkRequest.Builder()
+                                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                                .build();
+                        cm.registerNetworkCallback(request, mNetworkCallback);
+                    }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "Failed to register NetworkCallback", e);
@@ -380,7 +415,9 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
 
     protected void connect() {
         try {
-            setReconnecting(false);
+            // Stop pending reconnect callbacks without wiping exponential backoff delay;
+            // delay is reset only upon successful synchronization, network restoration, or user cancel.
+            cancelPendingReconnect(false);
             if (mConnection != null) {
                 mConnection.detachListener();
                 mConnection.disconnect();
@@ -572,28 +609,44 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         mCallbacks.onLogError(message);
     }
 
+    private void cancelPendingReconnect(boolean resetDelay) {
+        mReconnecting = false;
+        mHandler.removeCallbacks(mReconnectRunnable);
+        if (resetDelay) {
+            mReconnectDelay = INITIAL_RECONNECT_DELAY;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                unregisterReceiver(mConnectivityReceiver);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
     public void setReconnecting(boolean reconnecting) {
         mReconnecting = reconnecting;
         mHandler.removeCallbacks(mReconnectRunnable);
 
         if (reconnecting && mAutoReconnect) {
-            int delay = mReconnectDelay;
-            Log.i(TAG, "Watchdog: Scheduling reconnect attempt in " + delay + " ms (exponential backoff)");
-            mHandler.postDelayed(mReconnectRunnable, delay);
-            // Exponential backoff up to 60s
-            mReconnectDelay = Math.min(mReconnectDelay * 2, MAX_RECONNECT_DELAY);
+            if (!isNetworkAvailable()) {
+                Log.i(TAG, "Watchdog: Network offline; deferring reconnect until network returns.");
+            } else {
+                int delay = mReconnectDelay;
+                Log.i(TAG, "Watchdog: Scheduling reconnect attempt in " + delay + " ms (exponential backoff)");
+                mHandler.postDelayed(mReconnectRunnable, delay);
+                // Exponential backoff up to 60s
+                mReconnectDelay = Math.min(mReconnectDelay * 2, MAX_RECONNECT_DELAY);
+            }
 
-            try {
-                registerReceiver(mConnectivityReceiver,
-                        new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
-            } catch (Exception ignored) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                try {
+                    registerReceiver(mConnectivityReceiver,
+                            new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+                } catch (Exception ignored) {
+                }
             }
         } else {
-            mReconnectDelay = INITIAL_RECONNECT_DELAY;
-            try {
-                unregisterReceiver(mConnectivityReceiver);
-            } catch (Exception ignored) {
-            }
+            cancelPendingReconnect(true);
         }
     }
 

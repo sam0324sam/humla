@@ -91,6 +91,7 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
     private boolean mTalking;
 
     private final Object mEncoderLock;
+    private final byte[] mSendPacketBuffer = new byte[1024];
     private byte mTargetId;
 
     public AudioHandler(Context context, HumlaLogger logger, int audioStream, int audioSource,
@@ -500,10 +501,10 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
         flags |= mCodec.ordinal() << 5;
         flags |= mTargetId & 0x1F;
 
-        final byte[] packetBuffer = new byte[1024];
+        final byte[] packetBuffer = mSendPacketBuffer;
         packetBuffer[0] = (byte) (flags & 0xFF);
 
-        PacketBuffer ds = new PacketBuffer(packetBuffer, 1024);
+        PacketBuffer ds = new PacketBuffer(packetBuffer, packetBuffer.length);
         ds.skip(1);
         ds.writeLong(mFrameCounter - frames);
         mEncoder.getEncodedData(ds);

@@ -66,9 +66,19 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
     public AudioOutput(AudioOutputListener listener) {
         mListener = listener;
         mMainHandler = new Handler(Looper.getMainLooper());
-        mDecodeExecutorService = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        // Lazily initialized only when >= 2 concurrent speakers require parallel decoding.
+        // Single-speaker walkie-talkie audio decodes directly on the urgent audio thread (zero context-switch).
+        mDecodeExecutorService = null;
         mPacketLock = new ReentrantLock();
         mMixer = new BasicClippingShortMixer();
+    }
+
+    private ExecutorService getDecodeExecutor() {
+        if (mDecodeExecutorService == null || mDecodeExecutorService.isShutdown()) {
+            int threads = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+            mDecodeExecutorService = Executors.newFixedThreadPool(threads);
+        }
+        return mDecodeExecutorService;
     }
 
     public Thread startPlaying(int audioStream) throws AudioInitializationException {
@@ -118,8 +128,14 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
         mPacketLock.unlock();
 
         mAudioOutputs.clear();
-        mAudioTrack.release();
-        mAudioTrack = null;
+        if (mDecodeExecutorService != null) {
+            mDecodeExecutorService.shutdownNow();
+            mDecodeExecutorService = null;
+        }
+        if (mAudioTrack != null) {
+            mAudioTrack.release();
+            mAudioTrack = null;
+        }
     }
 
     public boolean isPlaying() {
@@ -169,22 +185,39 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
      * @return true if the buffer contains audio data.
      */
     private boolean fetchAudio(short[] buffer, int bufferOffset, int bufferSize) {
-        Arrays.fill(buffer, bufferOffset, bufferOffset + bufferSize, (short) 0);
-        final List<IAudioMixerSource<float[]>> sources = new ArrayList<>();
+        final List<IAudioMixerSource<float[]>> sources = new ArrayList<>(1);
         try {
             mPacketLock.lock();
-            // Parallelize decoding using a fixed thread pool equal to the number of cores
-            List<Future<AudioOutputSpeech.Result>> futureResults =
-                    mDecodeExecutorService.invokeAll(mAudioOutputs.values());
-            for(Future<AudioOutputSpeech.Result> future : futureResults) {
-                AudioOutputSpeech.Result result = future.get();
+            int count = mAudioOutputs.size();
+            if (count == 0) {
+                return false;
+            }
+            if (count == 1) {
+                // Fast path for single speaker (99.9% of half-duplex PTT traffic):
+                // Decode directly on the URGENT_AUDIO thread with zero Future/thread-pool overhead.
+                AudioOutputSpeech speech = mAudioOutputs.values().iterator().next();
+                AudioOutputSpeech.Result result = speech.call();
                 if (result.isAlive()) {
                     sources.add(result);
                 } else {
-                    AudioOutputSpeech speech = result.getSpeechOutput();
                     Log.v(TAG, "Deleted audio user " + speech.getUser().getName());
                     mAudioOutputs.remove(speech.getSession());
                     speech.destroy();
+                }
+            } else {
+                // Parallelize decoding when multiple speakers talk simultaneously
+                List<Future<AudioOutputSpeech.Result>> futureResults =
+                        getDecodeExecutor().invokeAll(mAudioOutputs.values());
+                for (Future<AudioOutputSpeech.Result> future : futureResults) {
+                    AudioOutputSpeech.Result result = future.get();
+                    if (result.isAlive()) {
+                        sources.add(result);
+                    } else {
+                        AudioOutputSpeech speech = result.getSpeechOutput();
+                        Log.v(TAG, "Deleted audio user " + speech.getUser().getName());
+                        mAudioOutputs.remove(speech.getSession());
+                        speech.destroy();
+                    }
                 }
             }
         } catch (InterruptedException e) {
@@ -193,13 +226,18 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
         } catch (ExecutionException e) {
             e.printStackTrace();
             return false;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
         } finally {
             mPacketLock.unlock();
         }
 
-        if (sources.size() == 0)
+        if (sources.isEmpty()) {
             return false;
+        }
 
+        Arrays.fill(buffer, bufferOffset, bufferOffset + bufferSize, (short) 0);
         mMixer.mix(sources, buffer, bufferOffset, bufferSize);
         return true;
     }
