@@ -315,7 +315,9 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         try {
             WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wifiManager != null) {
-                mWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Humla:WifiLock");
+                // Use WIFI_MODE_FULL instead of WIFI_MODE_FULL_HIGH_PERF to allow 802.11 PSM DTIM sleep
+                // while keeping the Wi-Fi link active during screen-off standby (~30-60mA savings).
+                mWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL, "Humla:WifiLock");
             }
         } catch (Exception e) {
             Log.w(TAG, "Failed to create WifiLock", e);

@@ -46,7 +46,7 @@ public class AudioInput implements Runnable {
     private final int mFrameSize;
 
     private Thread mRecordThread;
-    private boolean mRecording;
+    private volatile boolean mRecording;
 
     public AudioInput(AudioInputListener listener, int audioSource, int targetSampleRate,
                       String echoCancellationMethod)
@@ -226,6 +226,41 @@ public class AudioInput implements Runnable {
         return mRecording;
     }
 
+    /**
+     * Lock-free hardware mic suspend — MUST be called only from the record thread itself
+     * to guarantee zero AB-BA deadlock with shutdown(). Releases AudioIn WakeLock & mic ADC power.
+     */
+    public void suspendHardwareCapture() {
+        AudioRecord record = mAudioRecord;
+        if (record != null
+                && record.getState() == AudioRecord.STATE_INITIALIZED
+                && record.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+            try {
+                record.stop();
+                Log.i(TAG, "Hardware mic suspended (AudioIn WakeLock released)");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to suspend hardware mic", e);
+            }
+        }
+    }
+
+    /**
+     * Lock-free hardware mic resume — MUST be called only from the record thread itself.
+     */
+    public void resumeHardwareCapture() {
+        AudioRecord record = mAudioRecord;
+        if (record != null && mRecording
+                && record.getState() == AudioRecord.STATE_INITIALIZED
+                && record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
+            try {
+                record.startRecording();
+                Log.i(TAG, "Hardware mic resumed for PTT transmission");
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to resume hardware mic", e);
+            }
+        }
+    }
+
 
 
     /**
@@ -259,12 +294,14 @@ public class AudioInput implements Runnable {
             int shortsRead = mAudioRecord.read(mAudioBuffer, 0, mFrameSize);
             if(shortsRead > 0) {
                 mListener.onAudioInputReceived(mAudioBuffer, mFrameSize);
-            } else {
+            } else if (mRecording) {
                 Log.e(TAG, "Error fetching audio! AudioRecord error " + shortsRead);
             }
         }
 
-        mAudioRecord.stop();
+        if (mAudioRecord.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
+            mAudioRecord.stop();
+        }
 
         Log.i(TAG, "stopped");
     }

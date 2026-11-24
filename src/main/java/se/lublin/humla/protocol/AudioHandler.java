@@ -32,6 +32,7 @@ import se.lublin.humla.audio.encoder.OpusEncoder;
 import se.lublin.humla.audio.encoder.PreprocessingEncoder;
 import se.lublin.humla.audio.encoder.ResamplingEncoder;
 import se.lublin.humla.audio.inputmode.IInputMode;
+import se.lublin.humla.audio.inputmode.ToggleInputMode;
 import se.lublin.humla.exception.AudioException;
 import se.lublin.humla.exception.AudioInitializationException;
 import se.lublin.humla.exception.NativeAudioException;
@@ -478,7 +479,22 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
 
         mTalking = talking;
         if (!talking) {
-            mInputMode.waitForInput();
+            if (mInputMode instanceof ToggleInputMode) {
+                ToggleInputMode toggle = (ToggleInputMode) mInputMode;
+                // 3-second warm-standby avoids Audio HAL churn during rapid back-and-forth exchanges
+                boolean wokeForTalk = toggle.waitForInputWithTimeout(3000L);
+                if (!wokeForTalk && mInput.isRecording()) {
+                    // Idle > 3s: stop AudioRecord on the record thread itself (lock-free, zero deadlock)
+                    // to power down mic ADC/ADSP and release AudioIn WakeLock.
+                    mInput.suspendHardwareCapture();
+                    toggle.waitForInput();
+                    if (mInput.isRecording() && toggle.isTalkingOn()) {
+                        mInput.resumeHardwareCapture();
+                    }
+                }
+            } else {
+                mInputMode.waitForInput();
+            }
         }
     }
 

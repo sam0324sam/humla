@@ -19,6 +19,7 @@ package se.lublin.humla.audio.inputmode;
 
 import android.util.Log;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -30,7 +31,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class ToggleInputMode implements IInputMode {
     private static final String TAG = ToggleInputMode.class.getName();
 
-    private boolean mInputOn;
+    private volatile boolean mInputOn;
     private final Lock mToggleLock;
     private final Condition mToggleCondition;
 
@@ -50,9 +51,12 @@ public class ToggleInputMode implements IInputMode {
 
     public void setTalkingOn(boolean talking) {
         mToggleLock.lock();
-        mInputOn = talking;
-        mToggleCondition.signalAll();
-        mToggleLock.unlock();
+        try {
+            mInputOn = talking;
+            mToggleCondition.signalAll();
+        } finally {
+            mToggleLock.unlock();
+        }
     }
 
     @Override
@@ -60,19 +64,49 @@ public class ToggleInputMode implements IInputMode {
         return mInputOn;
     }
 
+    /**
+     * Waits up to timeoutMs for PTT activation.
+     * @return true if PTT became active before timeout; false if timed out or interrupted.
+     */
+    public boolean waitForInputWithTimeout(long timeoutMs) {
+        mToggleLock.lock();
+        try {
+            if (mInputOn) {
+                return true;
+            }
+            long nanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+            while (!mInputOn && nanos > 0L) {
+                nanos = mToggleCondition.awaitNanos(nanos);
+            }
+            return mInputOn;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            Log.w(TAG, "Timed PTT wait interrupted, likely due to input thread shutdown.");
+            return false;
+        } finally {
+            mToggleLock.unlock();
+        }
+    }
+
     @Override
     public void waitForInput() {
         mToggleLock.lock();
-        if (!mInputOn) {
-            Log.v(TAG, "PTT: Suspending audio input.");
-            long startTime = System.currentTimeMillis();
-            try {
-                mToggleCondition.await();
-            } catch (InterruptedException e) {
-                Log.w(TAG, "Blocking for PTT interrupted, likely due to input thread shutdown.");
+        try {
+            if (!mInputOn) {
+                Log.v(TAG, "PTT: Suspending audio input.");
+                long startTime = System.currentTimeMillis();
+                try {
+                    while (!mInputOn) {
+                        mToggleCondition.await();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    Log.w(TAG, "Blocking for PTT interrupted, likely due to input thread shutdown.");
+                }
+                Log.v(TAG, "PTT: Suspended audio input for " + (System.currentTimeMillis() - startTime) + "ms.");
             }
-            Log.v(TAG, "PTT: Suspended audio input for " + (System.currentTimeMillis() - startTime) + "ms.");
+        } finally {
+            mToggleLock.unlock();
         }
-        mToggleLock.unlock();
     }
 }

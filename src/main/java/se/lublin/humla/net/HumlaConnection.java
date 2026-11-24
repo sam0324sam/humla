@@ -60,7 +60,8 @@ import se.lublin.humla.util.HumlaException;
 
 public class HumlaConnection implements HumlaTCP.TCPConnectionListener, HumlaUDP.UDPConnectionListener {
     private static final String TAG = HumlaConnection.class.getName();
-    public static final int PING_INTERVAL_SECONDS = 7;
+    // Paired with NAS Murmur timeout=25s: cuts radio ping wakeups by 56% vs 7s and allows 4G RRC_IDLE sleep
+    public static final int PING_INTERVAL_SECONDS = 16;
 
     /**
      * Message types that aren't shown in logcat.
