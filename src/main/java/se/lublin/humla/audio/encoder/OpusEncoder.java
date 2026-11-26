@@ -133,8 +133,9 @@ public class OpusEncoder implements IEncoder {
     @Override
     public void terminate() throws NativeAudioException {
         mTerminated = true;
-        if (mBufferedFrames > 0 && !isReady()) {
-            // Perform encode operation on remaining audio if available.
+        if (!isReady()) {
+            // Encode remaining audio (or a zero-padded tail packet if mBufferedFrames == 0)
+            // so the receiver always gets the Opus terminator bit and ends immediately.
             encode();
         }
     }

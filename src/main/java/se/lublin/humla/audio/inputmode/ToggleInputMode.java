@@ -19,7 +19,6 @@ package se.lublin.humla.audio.inputmode;
 
 import android.util.Log;
 
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -62,30 +61,6 @@ public class ToggleInputMode implements IInputMode {
     @Override
     public boolean shouldTransmit(short[] pcm, int length) {
         return mInputOn;
-    }
-
-    /**
-     * Waits up to timeoutMs for PTT activation.
-     * @return true if PTT became active before timeout; false if timed out or interrupted.
-     */
-    public boolean waitForInputWithTimeout(long timeoutMs) {
-        mToggleLock.lock();
-        try {
-            if (mInputOn) {
-                return true;
-            }
-            long nanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-            while (!mInputOn && nanos > 0L) {
-                nanos = mToggleCondition.awaitNanos(nanos);
-            }
-            return mInputOn;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            Log.w(TAG, "Timed PTT wait interrupted, likely due to input thread shutdown.");
-            return false;
-        } finally {
-            mToggleLock.unlock();
-        }
     }
 
     @Override

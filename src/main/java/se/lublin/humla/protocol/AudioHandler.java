@@ -92,6 +92,10 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
     private final Object mEncoderLock;
     private final byte[] mSendPacketBuffer = new byte[1024];
     private byte mTargetId;
+    // Drain AudioRecord for 400ms after PTT release (covers 260ms release tone without HAL invalidation
+    // or RecordThread ring-buffer overflow) before suspending hardware mic capture.
+    private static final long MIC_SUSPEND_DELAY_MS = 400L;
+    private long mIdleSinceMs = 0L;
 
     public AudioHandler(Context context, HumlaLogger logger, int audioStream, int audioSource,
                         int sampleRate, int targetBitrate, int targetFramesPerPacket,
@@ -425,7 +429,12 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
                 // Terminate encoding when talking stops.
                 if (!talking && mEncoder != null) {
                     try {
+                        int beforeFrames = mEncoder.getBufferedFrames();
                         mEncoder.terminate();
+                        int paddedFrames = mEncoder.getBufferedFrames() - beforeFrames;
+                        if (paddedFrames > 0) {
+                            mFrameCounter += paddedFrames;
+                        }
                     } catch (NativeAudioException e) {
                         e.printStackTrace();
                     }
@@ -434,6 +443,7 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
         }
 
         if (talking) {
+            mIdleSinceMs = 0L;
             // Boost/reduce amplitude based on user preference
             // TODO: perhaps amplify to the largest value that does not result in clipping.
             if (mAmplitudeBoost != 1.0f) {
@@ -472,15 +482,19 @@ public class AudioHandler extends HumlaNetworkListener implements AudioInput.Aud
         if (!talking) {
             if (mInputMode instanceof ToggleInputMode) {
                 ToggleInputMode toggle = (ToggleInputMode) mInputMode;
-                // 3-second warm-standby avoids Audio HAL churn during rapid back-and-forth exchanges
-                boolean wokeForTalk = toggle.waitForInputWithTimeout(3000L);
-                if (!wokeForTalk && mInput.isRecording()) {
-                    // Idle > 3s: stop AudioRecord on the record thread itself (lock-free, zero deadlock)
-                    // to power down mic ADC/ADSP and release AudioIn WakeLock.
-                    mInput.suspendHardwareCapture();
-                    toggle.waitForInput();
-                    if (mInput.isRecording() && toggle.isTalkingOn()) {
-                        mInput.resumeHardwareCapture();
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (mIdleSinceMs == 0L) {
+                    mIdleSinceMs = now;
+                } else if (now - mIdleSinceMs >= MIC_SUSPEND_DELAY_MS) {
+                    mIdleSinceMs = 0L;
+                    if (mInput.isRecording()) {
+                        // Stop AudioRecord on the record thread itself (lock-free, zero deadlock)
+                        // after draining past the 260ms PTT release tone window.
+                        mInput.suspendHardwareCapture();
+                        toggle.waitForInput();
+                        if (mInput.isRecording() && toggle.isTalkingOn()) {
+                            mInput.resumeHardwareCapture();
+                        }
                     }
                 }
             } else {
