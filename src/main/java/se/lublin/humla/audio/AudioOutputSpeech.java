@@ -17,6 +17,8 @@
 
 package se.lublin.humla.audio;
 
+import android.util.Log;
+
 import com.googlecode.javacpp.IntPointer;
 
 import java.nio.BufferOverflowException;
@@ -40,6 +42,7 @@ import se.lublin.humla.protocol.AudioHandler;
  * Created by andrew on 16/07/13.
  */
 public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
+    private static final String TAG = "AudioOutputSpeech";
 
     interface TalkStateListener {
         public void onTalkStateUpdated(int session, TalkState state);
@@ -69,6 +72,16 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
     private final IntPointer mDelayPointer = new IntPointer(1);
     private final ByteBuffer mDirectPacketBuffer = ByteBuffer.allocateDirect(4096);
     private TalkState mLastReportedTalkState = null;
+
+    // Lightweight RX quality counters (logged once on destroy to distinguish network vs mic issues)
+    private int mPutPackets = 0;
+    private int mExpectedNextSeq = -1;
+    private int mLostFrames = 0;
+    private int mMaxSeqGap = 0;
+    private int mOkPackets = 0;
+    private int mMissTicks = 0;
+    private int mMaxConsecMiss = 0;
+    private boolean mEndedByTerminator = false;
 
     private TalkStateListener mTalkStateListener;
 
@@ -145,6 +158,18 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
 
                 int size = pb.left();
                 byte[] data = pb.dataBlock(size);
+                mPutPackets++;
+                int framesInPacket = Math.max(1, samples / AudioHandler.FRAME_SIZE);
+                if (mExpectedNextSeq >= 0 && seq > mExpectedNextSeq) {
+                    int gap = seq - mExpectedNextSeq;
+                    mLostFrames += gap;
+                    if (gap > mMaxSeqGap) {
+                        mMaxSeqGap = gap;
+                    }
+                }
+                if (seq + framesInPacket > mExpectedNextSeq) {
+                    mExpectedNextSeq = seq + framesInPacket;
+                }
                 Speex.JitterBufferPacket packet = new Speex.JitterBufferPacket(data, size, AudioHandler.FRAME_SIZE * seq, samples, 0, flags);
                 mJitterBuffer.put(packet);
             } catch (BufferOverflowException e) {
@@ -215,6 +240,7 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                         packet.limit(jbp.getLength());
                         PacketBuffer pb = new PacketBuffer(packet);
 
+                        mOkPackets++;
                         mMissCount = 0;
                         ucFlags = jbp.getUserData();
 
@@ -256,6 +282,10 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                         }
 
                         mMissCount++;
+                        mMissTicks++;
+                        if (mMissCount > mMaxConsecMiss) {
+                            mMaxConsecMiss = mMissCount;
+                        }
                         // Tolerate up to 350ms transient Wi-Fi/4G jitter before tearing down the speech stream;
                         // normal PTT releases include the Opus terminator bit and still end immediately.
                         if (mMissCount > 35)
@@ -276,8 +306,10 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                             }
                         }
 
-                        if(mFrames.isEmpty() && mHasTerminator)
+                        if(mFrames.isEmpty() && mHasTerminator) {
+                            mEndedByTerminator = true;
                             nextAlive = false;
+                        }
                     } else {
                         decodedSamples = mDecoder.decodeFloat(null, 0, mOut, AudioHandler.FRAME_SIZE);
                     }
@@ -367,6 +399,14 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
      * This MUST be called eventually, otherwise we get memory leaks!
      */
     public void destroy() {
+        Log.i(TAG, "RX stats [" + (mUser != null ? mUser.getName() : "?") + "]: "
+                + "put=" + mPutPackets
+                + " ok=" + mOkPackets
+                + " missTicks=" + mMissTicks
+                + " maxConsecMiss=" + mMaxConsecMiss + "(" + (mMaxConsecMiss * 10) + "ms)"
+                + " lostFrames=" + mLostFrames
+                + " maxSeqGap=" + mMaxSeqGap + "(" + (mMaxSeqGap * 10) + "ms)"
+                + " end=" + (mEndedByTerminator ? "terminator" : "timeout"));
         if(mDecoder != null) mDecoder.destroy();
         mJitterBuffer.destroy();
         if (avail != null) {
