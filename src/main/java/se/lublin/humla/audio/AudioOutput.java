@@ -157,8 +157,9 @@ public class AudioOutput implements Runnable, AudioOutputSpeech.TalkStateListene
             } else {
                 Log.v(TAG, "Pausing thread.");
                 synchronized (mInactiveLock) {
-                    mAudioTrack.flush();
-                    mAudioTrack.pause();
+                    // Use stop() instead of flush()+pause() so MODE_STREAM drains the remaining
+                    // ~80ms hardware buffer cleanly without truncating the final syllable.
+                    mAudioTrack.stop();
 
                     try {
                         mInactiveLock.wait();

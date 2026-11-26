@@ -148,6 +148,9 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
 
     private PowerManager.WakeLock mWakeLock;
     private WifiManager.WifiLock mWifiLock;
+    private WifiManager.WifiLock mVoiceWifiLock;
+    private volatile boolean mLocalTalking = false;
+    private static final long VOICE_WIFI_BOOST_HOLD_MS = 5000L;
     private Handler mHandler;
     private HumlaCallbacks mCallbacks;
 
@@ -166,6 +169,50 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     private int mReconnectDelay = INITIAL_RECONNECT_DELAY;
     private boolean mReconnecting;
     private ConnectivityManager.NetworkCallback mNetworkCallback;
+
+    private final Runnable mReleaseVoiceWifiBoostRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (mLocalTalking || (mAudioHandler != null && mAudioHandler.isAudioOutputActive())) {
+                mHandler.postDelayed(this, 2000L);
+                return;
+            }
+            releaseVoiceWifiBoostNow();
+        }
+    };
+
+    private void acquireVoiceWifiBoost() {
+        if (mHandler != null) {
+            mHandler.removeCallbacks(mReleaseVoiceWifiBoostRunnable);
+        }
+        if (mVoiceWifiLock != null && !mVoiceWifiLock.isHeld()) {
+            try {
+                mVoiceWifiLock.acquire();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to acquire VoiceWifiLock", e);
+            }
+        }
+    }
+
+    private void scheduleVoiceWifiBoostRelease() {
+        if (mHandler != null && mVoiceWifiLock != null && mVoiceWifiLock.isHeld()) {
+            mHandler.removeCallbacks(mReleaseVoiceWifiBoostRunnable);
+            mHandler.postDelayed(mReleaseVoiceWifiBoostRunnable, VOICE_WIFI_BOOST_HOLD_MS);
+        }
+    }
+
+    private void releaseVoiceWifiBoostNow() {
+        if (mHandler != null) {
+            mHandler.removeCallbacks(mReleaseVoiceWifiBoostRunnable);
+        }
+        if (mVoiceWifiLock != null && mVoiceWifiLock.isHeld()) {
+            try {
+                mVoiceWifiLock.release();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to release VoiceWifiLock", e);
+            }
+        }
+    }
 
     private final Runnable mReconnectRunnable = new Runnable() {
         @Override
@@ -284,6 +331,12 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
                                 if (currentUser == null) return;
 
                                 currentUser.setTalkState(talking ? TalkState.TALKING : TalkState.PASSIVE);
+                                mLocalTalking = talking;
+                                if (talking) {
+                                    acquireVoiceWifiBoost();
+                                } else {
+                                    scheduleVoiceWifiBoostRelease();
+                                }
                                 mCallbacks.onUserTalkStateUpdated(currentUser);
                             } catch (NotSynchronizedException e) {
                                 e.printStackTrace();
@@ -296,6 +349,11 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
     private AudioOutput.AudioOutputListener mAudioOutputListener = new AudioOutput.AudioOutputListener() {
         @Override
         public void onUserTalkStateUpdated(final User user) {
+            if (user != null && user.getTalkState() != TalkState.PASSIVE) {
+                acquireVoiceWifiBoost();
+            } else {
+                scheduleVoiceWifiBoostRelease();
+            }
             mCallbacks.onUserTalkStateUpdated(user);
         }
 
@@ -343,6 +401,10 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
                 // Use WIFI_MODE_FULL instead of WIFI_MODE_FULL_HIGH_PERF to allow 802.11 PSM DTIM sleep
                 // while keeping the Wi-Fi link active during screen-off standby (~30-60mA savings).
                 mWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL, "Humla:WifiLock");
+                // Secondary lock acquired only during active voice TX/RX (+5s tail) to eliminate
+                // 100-300ms 802.11 PSM DTIM jitter without affecting overnight standby power.
+                mVoiceWifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Humla:VoiceWifiLock");
+                mVoiceWifiLock.setReferenceCounted(false);
             }
         } catch (Exception e) {
             Log.w(TAG, "Failed to create WifiLock", e);
@@ -435,6 +497,8 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         if (mWakeLock != null && mWakeLock.isHeld()) {
             mWakeLock.release();
         }
+        mLocalTalking = false;
+        releaseVoiceWifiBoostNow();
         if (mWifiLock != null && mWifiLock.isHeld()) {
             try {
                 mWifiLock.release();
@@ -598,6 +662,8 @@ public class HumlaService extends Service implements IHumlaService, IHumlaSessio
         if (mWakeLock.isHeld()) {
             mWakeLock.release();
         }
+        mLocalTalking = false;
+        releaseVoiceWifiBoostNow();
         if (mWifiLock != null && mWifiLock.isHeld()) {
             try {
                 mWifiLock.release();

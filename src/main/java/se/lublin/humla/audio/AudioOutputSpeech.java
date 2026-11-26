@@ -101,9 +101,10 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
             mFadeIn[i] = mFadeOut[AudioHandler.FRAME_SIZE-i-1] = (float) Math.sin((float) i * mul);
 
         mJitterBuffer = new Speex.JitterBuffer(AudioHandler.FRAME_SIZE);
-        // Low-latency walkie-talkie jitter margin: 40ms (4 x 10ms frames) instead of 100ms, cutting 60ms RX latency
+        // Balanced walkie-talkie jitter margin: 70ms (7 x 10ms frames) absorbs Wi-Fi PSM / 4G jitter
+        // bursts without premature frame-skipping while staying 30ms leaner than upstream 100ms.
         IntPointer margin = new IntPointer(1);
-        margin.put(4 * AudioHandler.FRAME_SIZE);
+        margin.put(7 * AudioHandler.FRAME_SIZE);
         mJitterBuffer.control(Speex.JitterBuffer.JITTER_BUFFER_SET_MARGIN, margin);
         margin.deallocate();
     }
@@ -255,7 +256,9 @@ public class AudioOutputSpeech implements Callable<AudioOutputSpeech.Result> {
                         }
 
                         mMissCount++;
-                        if(mMissCount > 10)
+                        // Tolerate up to 350ms transient Wi-Fi/4G jitter before tearing down the speech stream;
+                        // normal PTT releases include the Opus terminator bit and still end immediately.
+                        if (mMissCount > 35)
                             nextAlive = false;
                     }
                 }
